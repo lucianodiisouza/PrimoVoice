@@ -24,9 +24,13 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 ENGINE_DIR="$HERE/engine"
 VENV="$ENGINE_DIR/.venv"
 PY="$VENV/bin/python"
-RESOLVE_SCRIPTS="$HOME/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility"
-SYMLINK="$RESOLVE_SCRIPTS/PrimoVoice.py"
-SRC_PANEL="$HERE/resolve/PrimoVoice.py"
+# Resolve 21 no macOS soh tem LuaJIT (sem Python embed) e soh lista
+# arquivos .lua na Utility do menu Scripts. Alem disso, o scan soh
+# pega o /Library/Application Support (system-wide), NAO o user-level.
+# O AutoSubs mora nesse system folder tambem.
+RESOLVE_SCRIPTS="/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility"
+SYMLINK="$RESOLVE_SCRIPTS/PrimoVoice.lua"
+SRC_PANEL="$HERE/resolve/PrimoVoice.lua"
 
 WITH_RESEMBLE=0
 NO_PANEL=0
@@ -48,7 +52,7 @@ done
 if [[ $UNINSTALL -eq 1 ]]; then
   echo "→ removendo venv..."
   rm -rf "$VENV"
-  echo "→ removendo symlink do painel..."
+  echo "→ removendo painel (system folder)..."
   rm -f "$SYMLINK"
   echo "→ removendo marcadores .ok dos modelos..."
   rm -f "$HOME/Library/Application Support/PrimoVoice/models/"*.ok 2>/dev/null || true

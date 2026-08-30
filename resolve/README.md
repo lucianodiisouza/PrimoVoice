@@ -1,25 +1,44 @@
 # Painel PrimoVoice para o DaVinci Resolve
 
-Painel em Python puro (Fusion UIManager) que roda dentro do Resolve e chama o
-[engine](../engine) por subprocess. Design de 2 processos: o painel usa o Python
-embutido do Resolve; o engine roda no seu venv isolado com PyTorch/MPS.
+Painel em **Lua** (Fusion UIManager) que roda dentro do Resolve e chama o
+[engine](../engine) por subprocess. Design de 2 processos: o painel usa o
+**LuaJIT embutido do Resolve**; o engine roda no seu venv Python isolado com
+PyTorch/MPS.
+
+> **Por que Lua e não Python?** Resolve 21 no macOS só embarca LuaJIT
+> (não tem Python embed) e o menu `Workspace ▸ Scripts` na pasta `Utility/`
+> **só lista arquivos `.lua`**. O AutoSubs (que aparece no seu menu) é
+> exatamente isso — um script Lua no system folder.
 
 ## Instalação
 
-1. Instale o engine primeiro:
-   ```bash
-   cd ../engine && ./setup.sh
-   ```
-2. Faça o `PrimoVoice.py` aparecer no menu de Scripts do Resolve. Ou copie, ou
-   (melhor, mantém sincronizado com o git) crie um symlink na pasta de scripts do usuário:
-   ```bash
-   ln -s "$PWD/PrimoVoice.py" \
-     "$HOME/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility/PrimoVoice.py"
-   ```
-3. No Resolve: **Workspace ▸ Scripts ▸ PrimoVoice**.
+O `install.sh` da raiz já cuida de tudo:
 
-> O symlink aponta pro repo, então o script achará o engine em `../engine` a partir
-> do caminho real do arquivo.
+```bash
+cd /caminho/do/PrimoVoice
+./install.sh
+```
+
+Ele coloca o `PrimoVoice.lua` em `/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility/`
+(system folder, junto com o AutoSubs). Esse é o único local que o Resolve 21
+no macOS lê para o menu `Utility`.
+
+Se você moveu o install e quer re-linkar manualmente:
+
+```bash
+cp resolve/PrimoVoice.lua \
+  "/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility/"
+```
+
+> **Por que system folder, não user folder?** O scan do Resolve 21 na
+> macOS pega só `/Library/Application Support/...` (system), não
+> `~/Library/Application Support/...` (user). Confirmado por teste: nem
+> `.py` nem `.lua` colocados no user folder aparecem no menu, só os do
+> system folder.
+
+> O panel lê o engine de um caminho relativo (`../engine/.venv/bin/python`)
+> a partir de `resolve/PrimoVoice.lua` resolvido via `debug.getinfo`. Então
+> a cópia precisa ser do arquivo real (não symlink) no caminho system.
 
 ## Uso
 
@@ -30,9 +49,8 @@ embutido do Resolve; o engine roda no seu venv isolado com PyTorch/MPS.
 3. (Opcional) Desmarque **Manter original na timeline (A/B)** se não quiser a
    faixa extra de comparação. Com ela marcada, a timeline ganha duas faixas
    lado a lado: `PrimoVoice · enhanced` e `PrimoVoice · original`. Mute/solo
-   pra comparar.
-4. **Processar timeline** → renderiza o áudio, limpa, e adiciona a(s) nova(s)
-   faixa(s).
+   pra comparar; delete a perdedora quando decidir.
+4. **Processar timeline**.
 
 ### Presets disponíveis
 
