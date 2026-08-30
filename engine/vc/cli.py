@@ -6,6 +6,7 @@ Uso:
   python -m vc.cli presets           # lista presets disponíveis (JSON)
   python -m vc.cli models            # lista modelos + status (JSON)
   python -m vc.cli download demucs   # baixa um modelo
+  python -m vc.cli gui               # abre a GUI standalone (Tkinter, Resolve-free)
 """
 
 from __future__ import annotations
@@ -82,6 +83,14 @@ def _cmd_presets(args) -> int:
     return 0
 
 
+def _cmd_gui(args) -> int:
+    # Import lazy: o usuário pode estar rodando a CLI sem Tkinter instalado
+    # e não faz sentido pagar o custo (e o side-effect de inicializar Tcl)
+    # só pra mostrar `primovoice --help`.
+    from . import gui
+    return gui.main()
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="primovoice")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -114,6 +123,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     pp_presets = sub.add_parser("presets", help="lista presets de mix")
     pp_presets.set_defaults(func=_cmd_presets)
+
+    pg = sub.add_parser("gui", help="abre a GUI standalone (Tkinter, "
+                                    "funciona no Resolve Free, não precisa do Fusion UIManager)")
+    pg.set_defaults(func=_cmd_gui)
 
     return p
 
