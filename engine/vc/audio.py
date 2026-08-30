@@ -27,15 +27,19 @@ def load(path: str | Path, sr: int | None = None) -> tuple[np.ndarray, int]:
     Usa ffmpeg pra aceitar qualquer container (mov, mp4, wav, m4a...).
     """
     path = str(path)
-    # Descobre canais/sr reais via ffprobe
-    probe = subprocess.run(
+    # Descobre canais/sr reais via ffprobe. Parseia por chave — o ffprobe não
+    # garante a ordem dos campos pedidos, então nunca dependa da posição.
+    raw_probe = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "a:0",
          "-show_entries", "stream=channels,sample_rate",
-         "-of", "csv=p=0", path],
+         "-of", "default=noprint_wrappers=1", path],
         capture_output=True, text=True, check=True,
-    ).stdout.strip().split(",")
-    channels = int(probe[0])
-    src_sr = int(probe[1])
+    ).stdout
+    fields = dict(
+        line.split("=", 1) for line in raw_probe.strip().splitlines() if "=" in line
+    )
+    channels = int(fields["channels"])
+    src_sr = int(fields["sample_rate"])
     out_sr = sr or src_sr
 
     cmd = ["ffmpeg", "-v", "error", "-i", path,
