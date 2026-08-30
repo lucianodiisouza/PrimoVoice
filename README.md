@@ -1,24 +1,19 @@
 # PrimoVoice
 
-Realce de voz para o **DaVinci Resolve** — o mesmo tipo de resultado do Adobe
-Podcast (voz destacada, ruído isolado, som natural sem ficar metálico),
-rodando **local** na sua máquina e **de graça**, com controle independente de
-**Speech / Music / Background**.
+Realce de voz para o **DaVinci Resolve**. Roda local no seu Mac (Apple Silicon), usa modelos open-source e dá controle independente de **Speech / Music / Background**.
 
-Feito para Apple Silicon (macOS), usando modelos open-source que rodam
-localmente.
+Feito pra macOS, com modelos que rodam por dentro do MPS.
+
+> Status: **em desenvolvimento** (MVP). Veja o [roadmap](#roadmap).
 
 ## Como funciona
 
-O PrimoVoice imita a arquitetura da versão paga do Adobe Podcast em duas
-etapas:
+O PrimoVoice processa o áudio em duas etapas:
 
-1. **Isolamento generativo da voz** — em vez de só filtrar ruído (que deixa a
-   voz metálica, como o noise suppression clássico), um modelo neural
-   *reconstrói* a voz limpa.
-2. **Separação de fontes** — o que não é voz é separado em **música** e
-   **ruído de fundo**, pra você dosar cada faixa independentemente antes do
-   remix.
+1. **Isolamento da voz** - um modelo neural reconstrói a voz limpa em vez de só filtrar ruído
+   (que deixa a voz metálica, como o noise suppression clássico).
+2. **Separação de fontes** - o que não é voz vira **música** e **ruído de fundo**, pra
+   dosar cada faixa de forma independente antes do remix.
 
 ```
 áudio → [isolar voz] → voz limpa
@@ -32,7 +27,7 @@ etapas:
 
 | Modelo | Função | Tamanho |
 |---|---|---|
-| DeepFilterNet3 | limpeza da voz (default) | ~20 MB |
+| DeepFilterNet3 | limpeza da voz (padrão) | ~20 MB |
 | Demucs (htdemucs) | separar música / fundo | ~80 MB |
 | Resemble-Enhance | voz generativa (qualidade máxima, opcional) | ~300 MB |
 
@@ -41,7 +36,7 @@ Ficam em cache em `~/Library/Application Support/PrimoVoice/models`.
 ## Estrutura
 
 ```
-engine/     # o "cérebro": CLI Python em venv isolado (torch/MPS)
+engine/     # CLI Python em venv isolado (torch/MPS)
 resolve/    # painel/script que roda dentro do DaVinci Resolve (export → engine → import)
 tests/      # smoke test do pipeline (sem GPU, sem Resolve)
 ```
@@ -99,5 +94,4 @@ rate e nível (`max_volume` entre -50 e -0.5 dBFS). Saída em `tests/out/`
 
 ## Licença
 
-[MIT](LICENSE) · construído sobre DeepFilterNet, Demucs e Resemble-Enhance
-(todos MIT).
+[MIT](LICENSE) · construído sobre DeepFilterNet, Demucs e Resemble-Enhance (todos MIT).
