@@ -3,17 +3,34 @@
 O painel do Resolve consulta isto pra mostrar "instalado / baixar (X MB)".
 Cada modelo se auto-baixa pelo seu próprio loader; gravamos um marcador `.ok`
 no nosso cache pra saber o que já está pronto sem depender do cache interno de cada lib.
+
+Localização do cache:
+  macOS:    ~/Library/Application Support/PrimoVoice/models  (convenção Apple)
+  Linux:    $XDG_DATA_HOME/PrimoVoice/models  (default ~/.local/share/...)
+  Windows:  %LOCALAPPDATA%/PrimoVoice/models
 """
 
 from __future__ import annotations
 
 import json
+import os
+import platform
+import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 
 def cache_dir() -> Path:
-    d = Path.home() / "Library" / "Application Support" / "PrimoVoice" / "models"
+    system = platform.system()
+    if system == "Darwin":
+        d = Path.home() / "Library" / "Application Support" / "PrimoVoice" / "models"
+    elif system == "Windows":
+        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        d = Path(base) / "PrimoVoice" / "models"
+    else:
+        # Linux + outros Unix: XDG Base Directory.
+        xdg = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
+        d = Path(xdg) / "PrimoVoice" / "models"
     d.mkdir(parents=True, exist_ok=True)
     return d
 

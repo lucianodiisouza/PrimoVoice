@@ -1,0 +1,49 @@
+name: smoke
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  smoke:
+    # Linux x86_64 (MPS nao existe fora de macOS, mas o pipeline funciona
+    # em CPU - eh mais lento, mas o smoke nao tem SLA apertado).
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Create venv + install engine
+        run: |
+          cd engine
+          python3.12 -m venv .venv
+          .venv/bin/pip install -U pip wheel
+          .venv/bin/pip install -r requirements.txt
+
+      - name: Cache models
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/DeepFilterNet
+            ~/.cache/huggingface
+            ~/.cache/torch
+            ~/.local/share/PrimoVoice
+          key: models-${{ runner.os }}-${{ hashFiles('engine/requirements.txt') }}
+          restore-keys: |
+            models-${{ runner.os }}-
+
+      - name: Run smoke
+        run: tests/smoke.sh
