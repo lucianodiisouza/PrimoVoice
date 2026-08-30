@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "primovoice-engine"
+version = "0.1.0"
+description = "Voice enhancement engine (DeepFilterNet + Demucs + remix) for the PrimoVoice DaVinci Resolve panel."
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "Luciano dii Souza", email = "lucianodiisouza@hotmail.com" }]
+dependencies = [
+    "numpy>=1.24",
+    # Limpeza da voz (default).
+    "deepfilternet>=0.5.6",
+    # Separacao de stems (musica vs fundo).
+    "demucs>=4.0.1",
+    # Fixado em 2.2.2: versoes mais novas do torchaudio removeram o backend
+    # de I/O que o DeepFilterNet 0.5.6 ainda importa (torchaudio.backend.common).
+    "torch==2.2.2",
+    "torchaudio==2.2.2",
+]
+
+[project.optional-dependencies]
+# Backend generativo de qualidade maxima. Instale com: pip install -e .[resemble]
+resemble = ["resemble-enhance"]
+
+[project.scripts]
+# Apos `pip install -e .`, `primovoice` fica no PATH. Equivalente a
+# `python -m vc.cli` mas sem precisar ativar o venv ou usar cwd=engine/.
+primovoice = "vc.cli:main"
+
+[tool.setuptools]
+# O pacote importavel continua sendo `vc` (mantem compatibilidade com
+# o painel do Resolve e com `python -m vc.cli`).
+packages = ["vc"]
+
+[tool.setuptools.package-data]
+# Garante que os modulos sao achaveis (ja vem por padrao com __init__.py,
+# mas explicitar evita surpresa).
+vc = ["*.py"]
