@@ -19,6 +19,8 @@ dependencies = [
     # de I/O que o DeepFilterNet 0.5.6 ainda importa (torchaudio.backend.common).
     "torch==2.2.2",
     "torchaudio==2.2.2",
+    # GUI standalone (tema dark, look moderno estilo AutoSubs).
+    "customtkinter>=5.2",
 ]
 
 [project.optional-dependencies]
