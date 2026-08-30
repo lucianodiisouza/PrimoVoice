@@ -1,0 +1,105 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write  # pra criar a GitHub Release
+
+jobs:
+  build:
+    name: build artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build tooling
+        run: |
+          python -m pip install -U pip build
+
+      - name: Build wheel + sdist
+        working-directory: engine
+        run: |
+          python -m build --sdist --wheel --outdir ../dist
+
+      - name: Bundle source archive (com install.sh)
+        # Alem do wheel/sdist puro, gera um tarball com a pasta inteira
+        # do projeto (install.sh, engine/, resolve/, tests/, README).
+        # Util pra quem quer baixar o tarball e rodar ./install.sh direto.
+        run: |
+          cd ..
+          tar -czf dist/primovoice-${{ github.ref_name }}.tar.gz \
+            --exclude='dist' \
+            --exclude='engine/.venv' \
+            --exclude='engine/**/__pycache__' \
+            --exclude='tests/out' \
+            --exclude='.github' \
+            --exclude='.git' \
+            engine resolve tests install.sh README.md LICENSE .gitignore
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-artifacts
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+            dist/primovoice-*.tar.gz
+
+  publish-pypi:
+    name: publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    # So roda se a secret PYPI_TOKEN estiver configurada no repo.
+    # Pra habilitar: Settings ▸ Secrets and variables ▸ Actions ▸ New
+    # repository secret, nome = PYPI_TOKEN, valor = token do PyPI.
+    if: ${{ secrets.PYPI_TOKEN != '' }}
+    environment: pypi
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: release-artifacts
+          path: dist
+
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_TOKEN }}
+
+  github-release:
+    name: GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: release-artifacts
+          path: dist
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/*.whl
+            dist/*.tar.gz
+            dist/primovoice-*.tar.gz
