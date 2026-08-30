@@ -112,19 +112,27 @@ if [[ $WITH_RESEMBLE -eq 1 ]]; then
   "$VENV/bin/python" -m vc.cli download resemble || echo "  (resemble não baixou; sem ele o preset max-quality falha)"
 fi
 
-# ----- Symlink do painel no Resolve ---------------------------------------
+# ----- Painel no Resolve --------------------------------------------------
+# Cópia REAL do arquivo, não symlink: o DaVinci Resolve escaneia a pasta
+# Scripts/Utility no startup e tem comportamento inconsistente com symlinks
+# (em algumas versões simplesmente não lista o script). Cópia é à prova de
+# bala; o custo é rodar install.sh de novo se o painel mudar.
 if [[ $NO_PANEL -eq 0 ]]; then
   if [[ ! -f "$SRC_PANEL" ]]; then
-    echo "  ! painel não encontrado em $SRC_PANEL; pulando symlink (use --no-panel pra suprimir)"
+    echo "  ! painel não encontrado em $SRC_PANEL; pulando (use --no-panel pra suprimir)"
   else
     mkdir -p "$RESOLVE_SCRIPTS"
-    if [[ -L "$SYMLINK" && "$(readlink "$SYMLINK")" == "$SRC_PANEL" ]]; then
-      echo "  ✓ symlink do painel já no lugar"
-    elif [[ -e "$SYMLINK" ]]; then
-      echo "  ! $SYMLINK existe e não aponta pro repo; apaga manualmente se quiser re-linkar"
+    # Compara o conteúdo antes de copiar (mtime muda sempre).
+    if [[ -f "$SYMLINK" ]] && diff -q "$SYMLINK" "$SRC_PANEL" >/dev/null 2>&1; then
+      echo "  ✓ painel já no lugar e atualizado"
     else
-      ln -s "$SRC_PANEL" "$SYMLINK"
-      echo "  ✓ symlink do painel criado em $SYMLINK"
+      # Substitui symlink OU arquivo existente pelo conteúdo novo.
+      if [[ -L "$SYMLINK" ]]; then
+        python3 -c "import os; os.unlink('$SYMLINK')" 2>/dev/null || rm -f "$SYMLINK"
+      fi
+      cp "$SRC_PANEL" "$SYMLINK"
+      chmod +r "$SYMLINK"
+      echo "  ✓ painel copiado em $SYMLINK"
     fi
   fi
 fi
