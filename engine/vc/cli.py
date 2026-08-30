@@ -55,8 +55,11 @@ def _cmd_process(args) -> int:
         speech=speech, music=music, background=background,
         enhance_backend=backend, do_separate=do_separate,
         normalize=not args.no_normalize, progress=progress,
+        debug_dir=args.debug_dir,
     )
     print(json.dumps({"done": out}), flush=True)
+    if args.debug_dir:
+        print(json.dumps({"debug_dir": args.debug_dir}), flush=True)
     return 0
 
 
@@ -95,6 +98,9 @@ def build_parser() -> argparse.ArgumentParser:
     pp.add_argument("--no-separate", action=_OptStoreTrue, dest="no_separate",
                     help="pula o Demucs (sem faixa de música)")
     pp.add_argument("--no-normalize", action="store_true")
+    pp.add_argument("--debug-dir", metavar="DIR",
+                    help="salva stems intermediários (voice, residual, music, "
+                         "background) em DIR/ pra investigar qualidade")
     pp.set_defaults(func=_cmd_process,
                     speech_set=False, music_set=False, bg_set=False,
                     enhance_set=False, no_separate_set=False)
