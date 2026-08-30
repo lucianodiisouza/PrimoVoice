@@ -84,6 +84,19 @@ if ! command -v "$PYTHON" >/dev/null 2>&1; then
     exit 1
   fi
 fi
+
+# Tkinter (stdlib, mas o python@3.12 do homebrew vem sem `_tkinter`).
+# Sem isso a GUI standalone (`primovoice gui`) não abre.
+if ! "$PYTHON" -c "import _tkinter" 2>/dev/null; then
+  if command -v brew >/dev/null; then
+    echo "  tkinter não habilitado; instalando python-tk@3.12 via Homebrew..."
+    brew install python-tk@3.12
+  else
+    echo "  ! tkinter não habilitado. A GUI standalone (`primovoice gui`) não vai abrir."
+    echo "    Instale python-tk (ou python3-tk no Linux) ou use a CLI/Resolve panel."
+  fi
+fi
+
 echo "  ✓ ffmpeg:   $(ffmpeg -version | head -1 | awk '{print $2, $3}')"
 echo "  ✓ Python:   $($PYTHON --version)"
 echo "  ✓ Repo:     $HERE"
@@ -151,6 +164,10 @@ Próximos passos:
   2. Carrega uma timeline com áudio
   3. Workspace ▸ Scripts ▸ PrimoVoice
   4. Escolhe um preset e clica "Processar timeline"
+
+  Sem painel (ou Resolve Free): GUI standalone funciona em qualquer versão
+  (inclui Resolve 21 Free, onde o UIManager do Fusion é bloqueado).
+    engine/.venv/bin/primovoice gui
 
 Standalone (sem Resolve):
   engine/.venv/bin/primovoice presets
