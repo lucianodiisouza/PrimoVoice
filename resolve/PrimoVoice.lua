@@ -202,9 +202,24 @@ local function build_ui()
         log("erro: r:Fusion() retornou nil")
         return nil
     end
-    local ui = fusion.UIManager
-    if not ui then
-        log("erro: fusion.UIManager e nil")
+    log("fusion obj: " .. tostring(fusion))
+    -- Em Fusion 9 (que o Resolve 21 usa), o UIManager fica no global
+    -- `app`. `fusion.UIManager` é o jeito antigo, retorna nil aqui.
+    -- Tenta varios caminhos em ordem.
+    local ui
+    if type(fusion.UIManager) == "userdata" or type(fusion.UIManager) == "table" then
+        ui = fusion.UIManager
+        log("UIManager via fusion.UIManager")
+    elseif app and (type(app.UIManager) == "userdata" or type(app.UIManager) == "table") then
+        ui = app.UIManager
+        log("UIManager via app.UIManager")
+    elseif bmd and bmd.getUIManager then
+        ui = bmd.getUIManager()
+        log("UIManager via bmd.getUIManager()")
+    else
+        log("erro: nao achei UIManager (fusion=" .. tostring(fusion) ..
+            ", fusion.UIManager=" .. tostring(fusion.UIManager) ..
+            ", app=" .. tostring(app) .. ")")
         return nil
     end
     log("UIManager ok, montando janela...")
