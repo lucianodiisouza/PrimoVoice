@@ -24,11 +24,42 @@ embutido do Resolve; o engine roda no seu venv isolado com PyTorch/MPS.
 ## Uso
 
 1. Abra o projeto e selecione a timeline com a narração.
-2. Ajuste **Speech / Music / Background** e escolha a qualidade da voz.
-3. **Processar timeline** → renderiza o áudio, limpa, e adiciona uma nova faixa.
+2. Escolha um **preset** (Podcast, Narração, Entrevista ou Máxima qualidade) — os
+   sliders, qualidade da voz e toggle do Demucs são aplicados de uma vez. Ou
+   deixe em **Personalizado** e ajuste os sliders à mão.
+3. (Opcional) Desmarque **Manter original na timeline (A/B)** se não quiser a
+   faixa extra de comparação. Com ela marcada, a timeline ganha duas faixas
+   lado a lado: `PrimoVoice · enhanced` e `PrimoVoice · original`. Mute/solo
+   pra comparar.
+4. **Processar timeline** → renderiza o áudio, limpa, e adiciona a(s) nova(s)
+   faixa(s).
+
+### Presets disponíveis
+
+| Preset | Speech | Music | Background | Backend |
+|---|---|---|---|---|
+| Podcast | 100 | 10 | 10 | DeepFilterNet |
+| Narração | 100 | 0 | 5 | DeepFilterNet |
+| Entrevista | 100 | 20 | 30 | DeepFilterNet |
+| Máxima qualidade | 100 | 15 | 8 | Resemble |
+
+Definidos em [`engine/vc/presets.py`](../engine/vc/presets.py). Mexer num slider
+volta o ComboBox pra "Personalizado" pra você saber que o painel não vai
+sobrescrever o ajuste.
+
+### A/B no Resolve
+
+Com **Manter original** marcado, o resultado fica óbvio: duas faixas na timeline,
+mesma posição, com nomes diferentes. Mute uma, escute a outra, inverta. Quando
+decidir qual gosta, delete a faixa perdedora (botão direito na track header →
+"Delete Track").
 
 ## Requisitos
 
 - DaVinci Resolve (o render de áudio via API funciona nas versões recentes;
   algumas features de render podem exigir o **Studio**).
 - Engine instalado em `../engine/.venv`.
+- Resemble-Enhance (opcional, só pro preset **Máxima qualidade**):
+  ```bash
+  engine/.venv/bin/pip install -e .[resemble]  # ou: pip install resemble-enhance
+  ```
