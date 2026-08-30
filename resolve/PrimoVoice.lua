@@ -12,7 +12,39 @@
          (com A/B ligado, importa o original ao lado pra comparar mute/solo)
 ]]
 
-local json = require("json")  -- cjson/json vem com o LuaJIT do Resolve
+-- ---------------------------------------------------------------------------
+-- JSON: tenta cjson, depois json, depois dkjson. Fallback gracioso se
+-- nenhum estiver (vai dar erro no engine call, mas o painel ainda abre).
+-- ---------------------------------------------------------------------------
+local json
+local json_lib = nil
+for _, name in ipairs({"cjson.safe", "cjson", "json", "dkjson"}) do
+    local ok, lib = pcall(require, name)
+    if ok and lib then json = lib; json_lib = name; break end
+end
+if not json then
+    -- Sem JSON disponivel: parsing manual basico (decode soh objetos simples).
+    -- Funciona pq o engine soh emite {"chave": "valor" ou numero} por linha.
+    function json.decode(s)
+        local out = {}
+        s = s:gsub("^%s*{%s*", ""):gsub("%s*}%s*$", "")
+        for pair in s:gmatch("[^,]+") do
+            local k, v = pair:match('^%s*"(.-)"%s*:%s*(.-)%s*$')
+            if k then
+                if v:match('^".*"$') then
+                    out[k] = v:match('^"(.*)"$')
+                elseif v:match('^%-?%d+%.?%d*$') then
+                    out[k] = tonumber(v)
+                else
+                    out[k] = v
+                end
+            end
+        end
+        return out
+    end
+    function json.encode(t) return "" end
+    json_lib = "fallback-parser"
+end
 
 -- ---------------------------------------------------------------------------
 -- Localizacao do engine (venv) relativo a este arquivo.
@@ -21,6 +53,11 @@ local HERE = (debug.getinfo(1, "S").source:sub(2)):match("(.*/)")
 local PROJECT_ROOT = HERE:gsub("/resolve/$", "")
 local ENGINE_DIR = PROJECT_ROOT .. "/engine"
 local VENV_PY = ENGINE_DIR .. "/.venv/bin/python"
+
+local function log(msg)
+    -- Resolve Console (F6) captura stdout.
+    print("[PrimoVoice] " .. tostring(msg))
+end
 
 local function engine_available()
     local f = io.open(VENV_PY, "r")
@@ -31,8 +68,6 @@ end
 -- Roda `python -m vc.cli <args>` no venv. Faz stream das linhas JSON de stdout
 -- e chama on_line(evt) pra cada evento. Retorna (exit_code, last_event).
 local function run_engine(args, on_line)
-    -- Argumentos precisam de shell-escape basico. Como soh vem de UI, eh
-    -- seguro usar string.format direto.
     local cmd_parts = {VENV_PY, "-m", "vc.cli"}
     for _, a in ipairs(args) do cmd_parts[#cmd_parts + 1] = a end
     local cmd = table.concat(cmd_parts, " ")
@@ -84,8 +119,9 @@ end
 -- Resolve API
 -- ---------------------------------------------------------------------------
 local function get_resolve()
-    -- Lua: resolve e global injetado pelo Resolve, sem import.
-    return _G.resolve
+    -- Em Lua scripts do menu Workspace > Scripts, `resolve` é injetado como
+    -- global. Não usar _G.resolve (alguns bindings injetam em outro table).
+    return resolve
 end
 
 local function render_timeline_audio(project, out_dir)
@@ -99,16 +135,14 @@ local function render_timeline_audio(project, out_dir)
     local job_id = project:AddRenderJob()
     project:StartRendering({job_id}, false)
     while project:IsRenderingInProgress() do
-        -- sleep em segundos. Fusion Lua nao tem sleep direto - usa o clock
-        -- do host. Um loop simples de busy-wait com os.time funciona.
+        -- Busy-wait 0.5s. Não tem sleep direto no Lua do Resolve.
         local t0 = os.time()
         while os.time() == t0 do end
     end
-    -- Resolve coloca a extensao do container.
     local candidate = out_dir .. "/primovoice_in.wav"
     local f = io.open(candidate, "r")
     if f then f:close(); return candidate end
-    -- Tenta achar o arquivo no diretorio (Resolve pode usar outro nome).
+    -- Procura o arquivo no dir (Resolve às vezes renomeia).
     local p = io.popen("ls " .. out_dir .. " 2>/dev/null")
     if not p then return nil end
     for name in p:lines() do
@@ -121,8 +155,7 @@ local function render_timeline_audio(project, out_dir)
     return nil
 end
 
-local function _rename_clip(media_pool, item, name)
-    -- SetClipProperty aceita "Clip Name". No Lua, item:SetClipProperty(...).
+local function _rename_clip(item, name)
     pcall(function() item:SetClipProperty("Clip Name", name) end)
 end
 
@@ -133,7 +166,7 @@ local function import_result(project, in_wav, out_wav, keep_original)
     local items = media_pool:ImportMedia({tostring(out_wav)})
     if items and #items > 0 then
         local enh = items[1]
-        _rename_clip(media_pool, enh, "PrimoVoice · enhanced")
+        _rename_clip(enh, "PrimoVoice · enhanced")
         timeline:AddTrack("audio")
         media_pool:AppendToTimeline({enh})
     end
@@ -145,7 +178,7 @@ local function import_result(project, in_wav, out_wav, keep_original)
             local orig_items = media_pool:ImportMedia({tostring(in_wav)})
             if orig_items and #orig_items > 0 then
                 local orig = orig_items[1]
-                _rename_clip(media_pool, orig, "PrimoVoice · original")
+                _rename_clip(orig, "PrimoVoice · original")
                 timeline:AddTrack("audio")
                 media_pool:AppendToTimeline({orig})
             end
@@ -156,16 +189,38 @@ end
 -- ---------------------------------------------------------------------------
 -- UI (Fusion UIManager)
 -- ---------------------------------------------------------------------------
-local function main()
-    local resolve = get_resolve()
-    if not resolve then
-        print("Erro: rode este script de dentro do DaVinci Resolve (Workspace ▸ Scripts).")
-        return
+local function build_ui()
+    local r = get_resolve()
+    if not r then
+        log("erro: resolve nao disponivel (rode dentro do DaVinci).")
+        return nil
+    end
+    log("resolve ok, pegando Fusion UIManager...")
+
+    local fusion = r:Fusion()
+    if not fusion then
+        log("erro: r:Fusion() retornou nil")
+        return nil
+    end
+    local ui = fusion.UIManager
+    if not ui then
+        log("erro: fusion.UIManager e nil")
+        return nil
+    end
+    log("UIManager ok, montando janela...")
+
+    -- bmd é o modulo global de UIDispatcher. Tenta varios nomes por seguranca.
+    local disp_ctor
+    if bmd and bmd.UIDispatcher then
+        disp_ctor = bmd.UIDispatcher
+    end
+    if not disp_ctor then
+        log("erro: bmd.UIDispatcher nao disponivel (globals: resolve=" ..
+            tostring(resolve) .. ", fusion=" .. tostring(fusion) .. ")")
+        return nil
     end
 
-    local fusion = resolve:Fusion()
-    local ui = fusion.UIManager
-    local disp = bmd.UIDispatcher(ui)
+    local disp = disp_ctor(ui)
 
     local function slider_row(label, key, default)
         return ui:HGroup({
@@ -175,53 +230,80 @@ local function main()
         })
     end
 
-    local win = disp:AddWindow({
-        ID = "PrimoVoice", WindowTitle = "PrimoVoice", Geometry = {200, 200, 520, 560},
-    }, {ui:VGroup({
-        ui:Label({Text = "PrimoVoice — realce de voz", Weight = 0,
-                  Font = ui:Font({PixelSize = 18, Bold = true})}),
-        ui:Label({ID = "models_lbl", Text = "Verificando modelos…", Weight = 0}),
-        ui:VGap(6),
+    local win
+    local ok, err = pcall(function()
+        win = disp:AddWindow({
+            ID = "PrimoVoice", WindowTitle = "PrimoVoice", Geometry = {200, 200, 520, 580},
+        }, {ui:VGroup({
+            ui:Label({Text = "PrimoVoice — realce de voz", Weight = 0,
+                      Font = ui:Font({PixelSize = 18, Bold = true})}),
+            ui:Label({ID = "models_lbl", Text = "Verificando modelos…", Weight = 0}),
+            ui:VGap(6),
 
-        -- Preset
-        ui:HGroup({
-            ui:Label({Text = "Preset:", Weight = 0.3, MinimumSize = {90, 20}}),
-            ui:ComboBox({ID = "preset", Weight = 0.7}),
-        }),
-        ui:Label({ID = "preset_desc", Text = " ", Weight = 0, WordWrap = true}),
-        ui:VGap(6),
+            ui:HGroup({
+                ui:Label({Text = "Preset:", Weight = 0.3, MinimumSize = {90, 20}}),
+                ui:ComboBox({ID = "preset", Weight = 0.7}),
+            }),
+            ui:Label({ID = "preset_desc", Text = " ", Weight = 0, WordWrap = true}),
+            ui:VGap(6),
 
-        slider_row("Speech", "speech", 100),
-        slider_row("Music", "music", 10),
-        slider_row("Background", "bg", 10),
-        ui:VGap(6),
+            slider_row("Speech", "speech", 100),
+            slider_row("Music", "music", 10),
+            slider_row("Background", "bg", 10),
+            ui:VGap(6),
 
-        ui:HGroup({
-            ui:Label({Text = "Qualidade da voz:", Weight = 0.4}),
-            ui:ComboBox({ID = "backend", Weight = 0.6}),
-        }),
-        ui:CheckBox({ID = "separate", Text = "Separar música/fundo (Demucs)", Checked = true}),
-        ui:CheckBox({ID = "ab", Text = "Manter original na timeline (A/B)", Checked = true}),
-        ui:VGap(8),
-        ui:Button({ID = "process", Text = "Processar timeline"}),
-        ui:Label({ID = "status", Text = "", Weight = 0, WordWrap = true}),
-    })})
+            ui:HGroup({
+                ui:Label({Text = "Qualidade da voz:", Weight = 0.4}),
+                ui:ComboBox({ID = "backend", Weight = 0.6}),
+            }),
+            ui:CheckBox({ID = "separate", Text = "Separar música/fundo (Demucs)", Checked = true}),
+            ui:CheckBox({ID = "ab", Text = "Manter original na timeline (A/B)", Checked = true}),
+            ui:VGap(8),
+            ui:Button({ID = "process", Text = "Processar timeline"}),
+            ui:Label({ID = "status", Text = "JSON: " .. (json_lib or "nil"), Weight = 0, WordWrap = true}),
+        })})
+    end)
+    if not ok then
+        log("erro no AddWindow: " .. tostring(err))
+        return nil
+    end
+    return disp, win
+end
+
+local function main()
+    log("PrimoVoice iniciando (json lib: " .. tostring(json_lib) .. ")")
+
+    local disp, win = build_ui()
+    if not disp or not win then
+        log("build_ui falhou; abortando")
+        return
+    end
+    log("janela criada, populando items...")
 
     local itm = win:GetItems()
 
-    -- Combobox: qualidade da voz
     itm.backend:AddItem("Rápida (DeepFilterNet)")
     itm.backend:AddItem("Máxima (Resemble)")
 
-    -- Combobox: presets
     local PRESETS = presets_list()
+    log("presets: " .. tostring(PRESETS and #PRESETS or 0))
+
     itm.preset:AddItem("Personalizado")
     if PRESETS then
         for _, p in ipairs(PRESETS) do
-            itm.preset:AddItem(p.name or p.id)
+            local name = p.name or p.id or "?"
+            itm.preset:AddItem(name)
         end
     end
     itm.preset.CurrentIndex = 0
+
+    local function find_preset_idx(preset_id)
+        if not PRESETS then return nil end
+        for i, p in ipairs(PRESETS) do
+            if p.id == preset_id then return i end
+        end
+        return nil
+    end
 
     local function apply_preset(idx)
         if not PRESETS or idx <= 0 or idx > #PRESETS then
@@ -240,7 +322,6 @@ local function main()
         itm.preset_desc.Text = p.description or ""
     end
 
-    -- Slider changes -> mark "Personalizado"
     for _, key in ipairs({"speech", "music", "bg"}) do
         win.On[key].ValueChanged = function(ev)
             itm[key .. "_val"].Text = tostring(math.floor(itm[key].Value)) .. "%"
@@ -262,19 +343,20 @@ local function main()
     else
         local parts = {}
         for _, m in ipairs(mods) do
-            local mark = m.installed and "✓" or ("⬇ " .. tostring(m.size_mb) .. " MB")
-            parts[#parts + 1] = string.format("%s %s", m.name or m.id, mark)
+            local mark
+            if m.installed then mark = "✓"
+            else mark = "⬇ " .. tostring(m.size_mb or "?") .. " MB" end
+            parts[#parts + 1] = string.format("%s %s", m.name or m.id or "?", mark)
         end
         itm.models_lbl.Text = table.concat(parts, " · ")
     end
 
-    local function on_close(ev)
-        disp:ExitLoop()
-    end
+    local function on_close(ev) disp:ExitLoop() end
     win.On.PrimoVoice.Close = on_close
 
     win.On.process.Clicked = function(ev)
-        local project = resolve:GetProjectManager():GetCurrentProject()
+        local r = get_resolve()
+        local project = r:GetProjectManager():GetCurrentProject()
         if not project or not project:GetCurrentTimeline() then
             itm.status.Text = "Abra um projeto com uma timeline."
             return
@@ -286,17 +368,16 @@ local function main()
             preset_id = PRESETS[preset_idx].id
         end
 
-        -- Diretorio temporario
-        local tmp = os.tmpname() .. "_primovoice"
-        os.execute("mkdir -p " .. tmp)
+        local tmp_name = os.tmpname() .. "_primovoice"
+        os.execute("mkdir -p " .. tmp_name)
 
         itm.status.Text = "Renderizando áudio da timeline…"
-        local in_wav = render_timeline_audio(project, tmp)
+        local in_wav = render_timeline_audio(project, tmp_name)
         if not in_wav then
             itm.status.Text = "Falha ao renderizar o áudio."
             return
         end
-        local out_wav = tmp .. "/primovoice_out.wav"
+        local out_wav = tmp_name .. "/primovoice_out.wav"
 
         local args
         if preset_id then
@@ -334,11 +415,15 @@ local function main()
         end
     end
 
+    log("mostrando janela")
     win:Show()
     disp:RunLoop()
     win:Hide()
+    log("loop terminou")
 end
 
-if not pcall(main) then
-    print("PrimoVoice error: " .. tostring(...))
+-- Wrap em pcall pra erros nao serem silenciosos.
+local ok, err = pcall(main)
+if not ok then
+    log("ERRO FATAL: " .. tostring(err))
 end
