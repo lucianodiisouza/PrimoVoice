@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.eggs/
+
+# Modelos baixados / cache
+models/
+*.ckpt
+*.pt
+*.onnx
+
+# Áudio de teste / saídas
+assets/*.wav
+assets/*.mp3
+assets/*.mov
+assets/*.mp4
+tests/out/
+
+# macOS
+.DS_Store
+
+# Editores
+.vscode/
+.idea/
