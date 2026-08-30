@@ -60,8 +60,8 @@ on Windows.
 ## Structure
 
 ```
-engine/     # Python CLI in isolated venv (torch/MPS)
-resolve/    # panel/script that runs inside DaVinci Resolve (export → engine → import)
+engine/     # Python CLI + GUI in isolated venv (torch/MPS, tkinter)
+resolve/    # panel/script that runs inside DaVinci Resolve Studio (export → engine → import)
 tests/      # smoke test of the pipeline (no GPU, no Resolve required)
 ```
 
@@ -87,7 +87,30 @@ overrides the preset. Details in [`engine/vc/presets.py`](engine/vc/presets.py).
 
 `python -m vc.cli` works the same way if you'd rather activate the venv.
 
+### GUI (no DaVinci Resolve required)
+
+For users on **DaVinci Resolve 21 Free** (where the Resolve panel is blocked
+by the Fusion UIManager Studio gate) or anyone who just wants a desktop app,
+there's a standalone Tkinter GUI. Pure stdlib - no extra dependencies beyond
+what the engine already needs.
+
+```bash
+engine/.venv/bin/primovoice gui
+```
+
+Pick a file, choose a preset, drag the sliders if you want, and click
+**Processar**. Progress and the final path show up in the log; on
+**Resolve 21 Free** the GUI is the supported way to use PrimoVoice without a
+Studio license.
+
 ## Usage (DaVinci Resolve panel)
+
+> **Resolve 21 Free note:** the in-Resolve panel requires the Fusion
+> UIManager, which is gated to **Studio** (the free build shows
+> "You have reached a limitation with DaVinci Resolve" the first time any
+> window is opened). Free users should use the [GUI](#gui-no-davinci-resolve-required)
+> above or the CLI. The panel still ships and installs because it works on
+> Studio; it just won't open the window on Free.
 
 `install.sh` already symlinked the panel for you. Quickstart:
 
@@ -116,7 +139,8 @@ rate, and level (`max_volume` between -50 and -0.5 dBFS). Output goes to
 
 - [x] Engine: voice isolation + source separation + remix with gains
 - [x] Model manager (download on demand)
-- [x] DaVinci Resolve panel (export/import via Python API)
+- [x] DaVinci Resolve **Studio** panel (export/import via Python API)
+- [x] **Standalone Tkinter GUI** (works on Resolve Free and outside Resolve)
 - [x] Resemble-Enhance backend (max quality)
 - [x] Mix presets (`podcast`, `narration`, `interview`, `max-quality`)
 - [x] A/B preview via parallel timeline tracks

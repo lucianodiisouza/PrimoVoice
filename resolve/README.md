@@ -5,6 +5,13 @@ Painel em **Lua** (Fusion UIManager) que roda dentro do Resolve e chama o
 **LuaJIT embutido do Resolve**; o engine roda no seu venv Python isolado com
 PyTorch/MPS.
 
+> **Resolve 21 Free**: o UIManager do Fusion é gated pra **Studio** — no Free,
+> a primeira chamada que abre uma janela mostra o dialog
+> "You have reached a limitation with DaVinci Resolve" e trava. Usuário Free
+> deve usar a **GUI standalone** (`engine/.venv/bin/primovoice gui`) ou a CLI
+> direta. O painel continua shipando porque funciona no Studio; ele só não
+> consegue abrir janela no Free.
+
 > **Por que Lua e não Python?** Resolve 21 no macOS só embarca LuaJIT
 > (não tem Python embed) e o menu `Workspace ▸ Scripts` na pasta `Utility/`
 > **só lista arquivos `.lua`**. O AutoSubs (que aparece no seu menu) é
