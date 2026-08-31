@@ -30,10 +30,21 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 import numpy as np
 import pygame
+import tkinterdnd2
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
 from . import presets
+
+
+# Hybrid root: customtkinter + drag-and-drop. TkinterDnD precisa que o root
+# seja da classe TkinterDnD.Tk, mas customtkinter também precisa de um
+# tk.Tk. Subclass dos dois resolve.
+class _DnDRoot(ctk.CTk, tkinterdnd2.TkinterDnD.DnDWrapper):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        # _require() inicializa o Tcl package do tkdnd; obrigatório.
+        self.TkdndVersion = tkinterdnd2.TkinterDnD._require(self)
 
 
 CUSTOM_LABEL = "Personalizado"
@@ -147,6 +158,18 @@ class PrimoVoiceApp:
         self.root.minsize(720, 700)
         self.root.configure(fg_color=BG)
 
+        # Garante que tkdnd está carregado (a dropzone precisa). Se o root
+        # não é _DnDRoot, tenta carregar o package Tcl aqui.
+        try:
+            self.root.tk.call("package", "present", "tkdnd")
+        except tk.TclError:
+            try:
+                import tkinterdnd2
+                tkinterdnd2.TkinterDnD._require(self.root)
+            except Exception as e:
+                # Sem DnD: drop zone fica inativa, picker por click ainda funciona.
+                print(f"[PrimoVoice] tkdnd não carregou: {e}", flush=True)
+
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
         self.worker: threading.Thread | None = None
 
@@ -190,6 +213,7 @@ class PrimoVoiceApp:
         self._build_ui()
         self._select_preset(self._payload[0]["id"])
         self._refresh_waveform()
+        self._update_dropzone_label()
         # Polling de posição do player (separado do drain_events pra rodar
         # mesmo quando a worker thread não emite nada).
         self.root.after(80, self._poll_player)
@@ -236,13 +260,16 @@ class PrimoVoiceApp:
         row += 1
 
         # Preset segmented (atrás do header, ancorado embaixo).
+        # CTkSegmentedButton 6.0 não tem text_color_selected; pra ter
+        # contraste em ambos os estados uso selected ACCENT_HOVER (cinza
+        # escuro) com texto preto - legível sem virar "preto sólido".
         labels = list(self._label_to_id.keys())
         self.preset_var = tk.StringVar(value=labels[1])
         self.preset_seg = ctk.CTkSegmentedButton(
             header, values=labels, variable=self.preset_var,
             command=self._on_preset_change,
-            fg_color=CARD, selected_color=ACCENT,
-            selected_hover_color=ACCENT_HOVER,
+            fg_color=CARD, selected_color=ACCENT_HOVER,
+            selected_hover_color=ACCENT,
             unselected_color=CARD, text_color=TEXT,
             text_color_disabled=TEXT_FAINT,
             font=ctk.CTkFont(size=12),
@@ -250,7 +277,7 @@ class PrimoVoiceApp:
         self.preset_seg.grid(row=2, column=0, columnspan=3, sticky="ew")
         row += 1
 
-        # ---- Player card (waveform + transport + A/B) -------------------
+        # ---- Player card (waveform + dropzone + transport + A/B) -------
         player = ctk.CTkFrame(
             main, fg_color=CARD, corner_radius=16,
             border_width=1, border_color=CARD_BORDER,
@@ -259,44 +286,59 @@ class PrimoVoiceApp:
         player.grid_columnconfigure(0, weight=1)
         row += 1
 
-        # Container do waveform: matplotlib + canvas overlay pra linha de playback.
-        wf_container = ctk.CTkFrame(player, fg_color=CARD, corner_radius=0)
-        wf_container.grid(row=0, column=0, sticky="ew", padx=20, pady=(20, 4))
-        wf_container.grid_columnconfigure(0, weight=1)
+        # Waveform (matplotlib). axvline é a linha de playback (sem overlay
+        # canvas em cima - senão esconde o waveform atrás).
         self.fig = Figure(figsize=(6, 1.6), dpi=100)
         self.fig.patch.set_facecolor(CARD)
-        self.waveform = FigureCanvasTkAgg(self.fig, master=wf_container)
+        self.waveform = FigureCanvasTkAgg(self.fig, master=player)
         self.waveform.get_tk_widget().configure(
             bg=CARD, highlightthickness=0, height=120)
-        self.waveform.get_tk_widget().grid(row=0, column=0, sticky="ew")
-        # Canvas overlay: mesma cor do card (fundo "esconde" o matplotlib);
-        # desenhamos só a linha vertical de playback. Mais leve que redraw
-        # do matplotlib a 12 fps.
-        self._play_overlay = tk.Canvas(
-            wf_container, bg=CARD, highlightthickness=0, bd=0, height=120,
-        )
-        self._play_overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
-        self._play_line = None
-        # Bind pra redimensionar a linha quando a janela muda.
-        self._play_overlay.bind("<Configure>", lambda _e: self._draw_play_line())
+        self.waveform.get_tk_widget().grid(
+            row=0, column=0, sticky="ew", padx=20, pady=(20, 4))
+        # Linhas vão ser recriadas a cada _redraw_waveform (que faz fig.clear).
+        self._wave_ax = None
+        self._play_line_artist = None
 
-        # File picker.
-        file_row = ctk.CTkFrame(player, fg_color="transparent")
-        file_row.grid(row=1, column=0, sticky="ew", padx=20, pady=(4, 4))
-        file_row.grid_columnconfigure(1, weight=1)
+        # Dropzone: card visual pro drop de arquivo. Substitui o entry de
+        # texto (que era "muito 2010"). Mostra nome do arquivo carregado
+        # ou instrução "Arraste um áudio / clique pra escolher".
         self.input_var = tk.StringVar()
         self.output_var = tk.StringVar()
-        ctk.CTkButton(
-            file_row, text="📁  Escolher áudio", height=36, corner_radius=18,
-            fg_color=BG, hover_color=CARD_BORDER, text_color=TEXT,
-            command=self._pick_input,
-        ).grid(row=0, column=0, padx=(0, 8))
-        ctk.CTkEntry(
-            file_row, textvariable=self.input_var,
-            placeholder_text="Nenhum arquivo selecionado…",
-            height=36, corner_radius=18, border_width=0,
-            fg_color=BG, text_color=TEXT, placeholder_text_color=TEXT_FAINT,
-        ).grid(row=0, column=1, sticky="ew")
+        self._dropzone = ctk.CTkFrame(
+            player, fg_color=BG, corner_radius=12,
+            border_width=2, border_color=CARD_BORDER,
+        )
+        self._dropzone.grid(row=1, column=0, sticky="ew", padx=20, pady=(4, 4))
+        self._dropzone.grid_columnconfigure(0, weight=1)
+        self._dropzone_label = ctk.CTkLabel(
+            self._dropzone,
+            text="⬇  Arraste um arquivo de áudio aqui  ou  clique pra escolher",
+            font=ctk.CTkFont(size=12),
+            text_color=TEXT_SOFT, anchor="w",
+        )
+        self._dropzone_label.grid(
+            row=0, column=0, sticky="ew", padx=16, pady=14)
+        # Botão "X" pra limpar (aparece quando há arquivo).
+        self._clear_btn = ctk.CTkButton(
+            self._dropzone, text="✕", width=28, height=28, corner_radius=14,
+            fg_color="transparent", hover_color=CARD_BORDER,
+            text_color=TEXT_SOFT, font=ctk.CTkFont(size=14),
+            command=self._clear_input,
+        )
+        # Sem arquivo inicialmente: esconde o X.
+        self._clear_btn.grid_forget()
+        # Drop target: registra o widget pra receber DnD de arquivos.
+        self._dropzone.drop_target_register(tkinterdnd2.DND_FILES)
+        self._dropzone.dnd_bind("<<Drop>>", self._on_drop)
+        self._dropzone.dnd_bind("<<DropEnter>>",
+                                lambda _e: self._dropzone.configure(
+                                    border_color=ACCENT, fg_color="#eef0ff"))
+        self._dropzone.dnd_bind("<<DropLeave>>",
+                                lambda _e: self._dropzone.configure(
+                                    border_color=CARD_BORDER, fg_color=BG))
+        # Click também abre picker (UX melhor: drop OU click).
+        self._dropzone.bind("<Button-1>", lambda _e: self._pick_input())
+        self._dropzone_label.bind("<Button-1>", lambda _e: self._pick_input())
 
         # Transport: play/pause + position slider + time label.
         transport = ctk.CTkFrame(player, fg_color="transparent")
@@ -347,8 +389,8 @@ class PrimoVoiceApp:
         self.ab_seg = ctk.CTkSegmentedButton(
             ab_row, values=["Original", "Enhanced"],
             variable=self.ab_var, command=self._on_ab_change,
-            fg_color=BG, selected_color=ACCENT,
-            selected_hover_color=ACCENT_HOVER,
+            fg_color=BG, selected_color=ACCENT_HOVER,
+            selected_hover_color=ACCENT,
             unselected_color=BG, text_color=TEXT,
             font=ctk.CTkFont(size=13, weight="bold"),
             height=40,
@@ -434,6 +476,42 @@ class PrimoVoiceApp:
         )
         self.log.pack(fill="both", expand=True, padx=12, pady=12)
         self.log.configure(state="disabled")
+
+        # ---- Scroll do trackpad ----------------------------------------
+        # CTkScrollableFrame não bind MouseWheel por padrão. Sem isso o
+        # trackpad (e qualquer wheel event) só rola se o user clicar
+        # direto na barra. Bind condicional via Enter/Leave: ativa scroll
+        # só quando o mouse está sobre a área scrollable.
+        self._main_scroll = main
+        scroll_canvas = main._parent_canvas
+
+        def _on_wheel(event: tk.Event) -> str:
+            # macOS/Windows: event.delta é múltiplo de 120 (1 linha) ou
+            # valores maiores (trackpad de alta precisão). Normaliza.
+            if event.num == 4:
+                delta = -1
+            elif event.num == 5:
+                delta = 1
+            else:
+                # delta positivo = scroll up (afasta o conteúdo pra cima).
+                # CTkScrollableFrame usa yview_scroll(positive=down), então
+                # invertemos.
+                delta = -1 * (event.delta // 120 or -1 if event.delta < 0 else 1)
+            scroll_canvas.yview_scroll(delta, "units")
+            return "break"
+
+        def _bind_wheel(_e: tk.Event) -> None:
+            scroll_canvas.bind_all("<MouseWheel>", _on_wheel)
+            scroll_canvas.bind_all("<Button-4>", _on_wheel)
+            scroll_canvas.bind_all("<Button-5>", _on_wheel)
+
+        def _unbind_wheel(_e: tk.Event) -> None:
+            scroll_canvas.unbind_all("<MouseWheel>")
+            scroll_canvas.unbind_all("<Button-4>")
+            scroll_canvas.unbind_all("<Button-5>")
+
+        scroll_canvas.bind("<Enter>", _bind_wheel)
+        scroll_canvas.bind("<Leave>", _unbind_wheel)
 
     def _build_slider_card(
         self, parent, row: int, name_en: str, name_pt: str,
@@ -571,13 +649,52 @@ class PrimoVoiceApp:
     # ---- Waveform + A/B -------------------------------------------------
 
     def _refresh_waveform(self) -> None:
+        """Redesenha o waveform do A/B atual. Recria a axvline de playback."""
         if self._ab == "enhanced" and self._samples_enhanced.size > 0:
             color = SPEECH_COLOR  # roxo igual fala limpa
             samples = self._samples_enhanced
         else:
             color = TEXT_SOFT
             samples = self._samples_original
-        _draw_waveform(self.waveform, samples, color)
+
+        fig = self.waveform.figure
+        fig.clear()
+        ax = fig.add_subplot(111)
+        ax.set_facecolor(CARD)
+        fig.patch.set_facecolor(CARD)
+        n = samples.size
+        if n == 0:
+            ax.text(0.5, 0.5, "—", ha="center", va="center",
+                    fontsize=24, color=TEXT_FAINT, transform=ax.transAxes)
+        else:
+            x = np.arange(n)
+            ax.bar(x, samples, bottom=-samples, width=1.0,
+                   color=color, edgecolor="none")
+            ax.set_xlim(-0.5, n - 0.5)
+            ax.set_ylim(-1.05, 1.05)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+        fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
+        # axvline de playback (zorder alto pra ficar acima das barras).
+        self._wave_ax = ax
+        x_pos = self._wave_x_for_position(n)
+        self._play_line_artist = ax.axvline(
+            x_pos, color=ACCENT, linewidth=2, zorder=10)
+        self.waveform.draw_idle()
+
+    def _wave_x_for_position(self, n: int | None = None) -> float:
+        """Coordenada x (data coords) do playback no waveform atual."""
+        if n is None:
+            if self._ab == "enhanced" and self._samples_enhanced.size > 0:
+                n = self._samples_enhanced.size
+            else:
+                n = self._samples_original.size
+        if n == 0 or self._duration <= 0:
+            return 0.0
+        ratio = min(self._position / self._duration, 1.0)
+        return ratio * (n - 1)
 
     def _on_ab_change(self, value: str | None = None) -> None:
         # SegmentedButton passa o valor selecionado. Mapeia pra "original"/"enhanced".
@@ -609,16 +726,49 @@ class PrimoVoiceApp:
         )
         if not path:
             return
+        self._load_input_file(path)
+
+    def _on_drop(self, event) -> None:
+        """Handler do drop. event.data é a lista de paths (string Tcl-style)."""
+        # tkinterdnd2 entrega como '{path with spaces} plain' ou só 'path'.
+        # A string pode ter múltiplos paths separados por espaço, ou um path
+        # com espaço entre chaves.
+        data = event.data.strip()
+        paths: list[str] = []
+        if data.startswith("{"):
+            # Parse paths com chaves: '{a b}' 'c' -> ['a b', 'c']
+            i = 0
+            while i < len(data):
+                if data[i] == "{":
+                    end = data.find("}", i)
+                    if end == -1:
+                        break
+                    paths.append(data[i + 1:end])
+                    i = end + 2  # pula } e espaço
+                else:
+                    end = data.find(" ", i)
+                    if end == -1:
+                        end = len(data)
+                    paths.append(data[i:end])
+                    i = end + 1
+        else:
+            paths = data.split()
+        if not paths:
+            return
+        path = paths[0]
+        if not Path(path).exists():
+            messagebox.showerror("Arquivo não existe", f"Não achei: {path}")
+            return
+        self._load_input_file(path)
+
+    def _load_input_file(self, path: str) -> None:
+        """Lógica comum pra pick_input e drop: carrega o áudio e reseta o estado."""
         self.input_var.set(path)
-        # Para o player se tava tocando.
         self._stop_playback()
-        # Recarrega waveform do original.
         self._samples_original = self._load_samples(path)
-        # Recarrega duration.
         self._duration = self._load_duration(path)
         self._position = 0.0
         self._update_time_label()
-        # Carrega o áudio no mixer.
         if self._audio_available:
             try:
                 pygame.mixer.music.load(path)
@@ -633,6 +783,35 @@ class PrimoVoiceApp:
         self.ab_var.set("Original")
         self.ab_seg.configure(state="disabled")
         self._refresh_waveform()
+        self._update_dropzone_label()
+
+    def _clear_input(self) -> None:
+        self._stop_playback()
+        self.input_var.set("")
+        self._samples_original = np.zeros(800)
+        self._enhanced_path = None
+        self._samples_enhanced = np.zeros(800)
+        self._ab = "original"
+        self.ab_var.set("Original")
+        self.ab_seg.configure(state="disabled")
+        self._duration = 0.0
+        self._position = 0.0
+        self._update_time_label()
+        self._refresh_waveform()
+        self._update_dropzone_label()
+
+    def _update_dropzone_label(self) -> None:
+        path = self.input_var.get().strip()
+        if path:
+            name = Path(path).name
+            self._dropzone_label.configure(
+                text=f"  {name}", text_color=TEXT, anchor="w")
+            self._clear_btn.grid(row=0, column=1, padx=(0, 12), pady=8)
+        else:
+            self._dropzone_label.configure(
+                text="⬇  Arraste um arquivo de áudio aqui  ou  clique pra escolher",
+                text_color=TEXT_SOFT)
+            self._clear_btn.grid_forget()
 
     # ---- Process --------------------------------------------------------
 
@@ -706,6 +885,7 @@ class PrimoVoiceApp:
                     self.ab_var.set("Original")
                     self.ab_seg.configure(state="normal")
                     self._refresh_waveform()
+                    self._update_dropzone_label()
                     # Toca o "Done" via statusbar (sem messagebox - clean).
                 elif kind == "error":
                     err = payload
@@ -917,27 +1097,24 @@ class PrimoVoiceApp:
         self.root.after(80, self._poll_player)
 
     def _draw_play_line(self) -> None:
-        """Desenha a linha vertical de playback sobre o waveform."""
-        if not self._play_overlay.winfo_exists():
+        """Atualiza a axvline de playback (chamada a cada poll de posição)."""
+        if self._play_line_artist is None or self._wave_ax is None:
             return
-        self._play_overlay.delete("playline")
-        if self._duration <= 0:
-            return
-        h = self._play_overlay.winfo_height()
-        w = self._play_overlay.winfo_width()
-        if w < 2:
-            return
-        ratio = min(self._position / self._duration, 1.0)
-        x = max(1, min(w - 1, int(ratio * w)))
-        self._play_overlay.create_line(
-            x, 0, x, h, fill=ACCENT, width=2, tags="playline")
+        # Descobre o n do waveform atual (n muda entre original e enhanced).
+        if self._ab == "enhanced" and self._samples_enhanced.size > 0:
+            n = self._samples_enhanced.size
+        else:
+            n = self._samples_original.size
+        self._play_line_artist.set_xdata([self._wave_x_for_position(n)])
+        # draw_idle é debounced e mais leve que draw. A 12fps fica suave.
+        self.waveform.draw_idle()
 
 
 def main() -> int:
     ctk.set_appearance_mode("light")
     ctk.set_default_color_theme("blue")
     try:
-        root = ctk.CTk()
+        root = _DnDRoot()
     except tk.TclError as e:
         print(f"✗ não consegui abrir a janela: {e}", flush=True)
         print("  a GUI precisa de um servidor de display.", flush=True)

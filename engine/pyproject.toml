@@ -25,6 +25,8 @@ dependencies = [
     "matplotlib>=3.7",
     # Audio playback (transport com play/pause/seek).
     "pygame>=2.5",
+    # Drag-and-drop de arquivos (drop zone na GUI).
+    "tkinterdnd2>=0.4",
 ]
 
 [project.optional-dependencies]
