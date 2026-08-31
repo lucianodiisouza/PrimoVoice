@@ -681,8 +681,12 @@ class PrimoVoiceApp:
 
         def run():
             try:
+                # '.[resemble]' tem que ir como UM argumento (junto com -e)
+                # e com cwd=engine pra ser interpretado como editable install
+                # do projeto atual com o extra 'resemble'. Senão o pip acha
+                # que '[resemble]' é nome de pacote e dá Invalid requirement.
                 proc = subprocess.run(
-                    [str(venv_pip), "install", "-e", str(engine_dir), "[resemble]"],
+                    [str(venv_pip), "install", "-e", ".[resemble]"],
                     capture_output=True, text=True, cwd=str(engine_dir),
                 )
                 if proc.returncode == 0:
