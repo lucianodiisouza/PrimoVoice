@@ -19,6 +19,10 @@ dependencies = [
     # de I/O que o DeepFilterNet 0.5.6 ainda importa (torchaudio.backend.common).
     "torch==2.2.2",
     "torchaudio==2.2.2",
+    # De-reverb (WPE). Python puro, sem GPU. Remove reverb estacionário
+    # (sala pequena/média). Aplicado ANTES do enhance pra voz limpa chegar
+    # ao isolador sem cor de sala.
+    "nara_wpe>=0.0.3",
     # GUI standalone (look moderno, tipo Adobe Podcast).
     "customtkinter>=5.2",
     # Waveform no GUI.

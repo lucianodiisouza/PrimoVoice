@@ -40,12 +40,14 @@ def _cmd_process(args) -> int:
         background = args.bg if args.bg_set else p.background
         backend = args.enhance if args.enhance_set else p.enhance_backend
         do_separate = (not args.no_separate) if args.no_separate_set else p.do_separate
+        do_dereverb = (not args.no_dereverb) if args.no_dereverb_set else p.do_dereverb
     else:
         speech = args.speech
         music = args.music
         background = args.bg
         backend = args.enhance
         do_separate = not args.no_separate
+        do_dereverb = not args.no_dereverb
 
     def progress(msg):
         # Uma linha JSON por evento -> fácil do painel parsear em stdout.
@@ -55,6 +57,7 @@ def _cmd_process(args) -> int:
         args.input, args.output,
         speech=speech, music=music, background=background,
         enhance_backend=backend, do_separate=do_separate,
+        do_dereverb=do_dereverb,
         normalize=not args.no_normalize, progress=progress,
         debug_dir=args.debug_dir,
     )
@@ -106,13 +109,16 @@ def build_parser() -> argparse.ArgumentParser:
     pp.add_argument("--enhance", default="deepfilter", choices=["deepfilter", "resemble"])
     pp.add_argument("--no-separate", action=_OptStoreTrue, dest="no_separate",
                     help="pula o Demucs (sem faixa de música)")
+    pp.add_argument("--no-dereverb", action=_OptStoreTrue, dest="no_dereverb",
+                    help="pula o WPE (sem remoção de reverb)")
     pp.add_argument("--no-normalize", action="store_true")
     pp.add_argument("--debug-dir", metavar="DIR",
                     help="salva stems intermediários (voice, residual, music, "
                          "background) em DIR/ pra investigar qualidade")
     pp.set_defaults(func=_cmd_process,
                     speech_set=False, music_set=False, bg_set=False,
-                    enhance_set=False, no_separate_set=False)
+                    enhance_set=False, no_separate_set=False,
+                    no_dereverb_set=False)
 
     pm = sub.add_parser("models", help="lista modelos e status de download")
     pm.set_defaults(func=_cmd_models)

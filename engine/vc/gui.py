@@ -208,6 +208,7 @@ class PrimoVoiceApp:
         # O dialog de Settings lê/escreve nestas vars.
         self.enhance_var = tk.StringVar(value="deepfilter")
         self.no_separate_var = tk.BooleanVar(value=False)
+        self.no_dereverb_var = tk.BooleanVar(value=False)
         self.no_normalize_var = tk.BooleanVar(value=False)
 
         self._build_ui()
@@ -625,10 +626,15 @@ class PrimoVoiceApp:
             progress_color=ACCENT,
         ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(12, 0))
         ctk.CTkSwitch(
+            body, text="Pular remoção de reverb (WPE)",
+            variable=self.no_dereverb_var, command=self._mark_custom,
+            progress_color=ACCENT,
+        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        ctk.CTkSwitch(
             body, text="Pular normalização do final",
             variable=self.no_normalize_var,
             progress_color=ACCENT,
-        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(8, 0))
         ctk.CTkButton(
             win, text="Fechar", command=win.destroy,
             fg_color=ACCENT, hover_color=ACCENT_HOVER,
@@ -791,6 +797,7 @@ class PrimoVoiceApp:
         self.music_var.set(p.music)
         self.bg_var.set(p.background)
         self.no_separate_var.set(not p.do_separate)
+        self.no_dereverb_var.set(not p.do_dereverb)
         # Não temos acesso direto aos value_labels; o callback do slider
         # já mantém o label sincronizado.
 
@@ -998,6 +1005,7 @@ class PrimoVoiceApp:
             background=self.bg_var.get(),
             enhance_backend=self.enhance_var.get() if hasattr(self, "enhance_var") else "deepfilter",
             do_separate=not (self.no_separate_var.get() if hasattr(self, "no_separate_var") else False),
+            do_dereverb=not (self.no_dereverb_var.get() if hasattr(self, "no_dereverb_var") else False),
             normalize=not (self.no_normalize_var.get() if hasattr(self, "no_normalize_var") else False),
         )
 

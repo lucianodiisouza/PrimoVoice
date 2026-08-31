@@ -1,10 +1,11 @@
-"""Orquestra o fluxo completo: isolar voz -> separar resíduo -> remixar."""
+"""Orquestra o fluxo completo: de-reverb -> isolar voz -> separar resíduo -> remixar."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 from . import audio as A
+from . import dereverb as DR
 from . import enhance, mix, models, separate
 
 
@@ -16,6 +17,7 @@ def process(
     background: float = 10.0,
     enhance_backend: str = "deepfilter",
     do_separate: bool = True,
+    do_dereverb: bool = True,
     normalize: bool = True,
     progress=lambda msg: None,
     debug_dir: str | Path | None = None,
@@ -24,6 +26,9 @@ def process(
 
     speech/music/background: ganhos 0..100 (100 = original).
     do_separate=False pula o Demucs (Music inerte, Background = tudo não-vocal).
+    do_dereverb=False pula o WPE. Default ON - a maioria dos podcasts caseiros
+    tem reverb de sala, e tirar ANTES do isolador deixa a voz chegar mais
+    "seca" pro modelo (melhor resultado do DeepFilterNet/Resemble).
     `progress` recebe strings de status (o painel do Resolve usa isso).
     `debug_dir` se dado, salva os stems intermediários (voice, residual,
     music, background) pra investigar qualidade. Cria a pasta se faltar.
@@ -31,6 +36,18 @@ def process(
     progress("Carregando áudio…")
     orig, sr = A.load(input_path)
     mono = A.to_mono(orig)
+
+    if do_dereverb:
+        progress("Removendo reverb (WPE)…")
+        # WPE é mono - se for estéreo, faz em cada canal e recombina.
+        if orig.shape[0] == 1:
+            orig = orig[0:1]  # garante 2D (1, N)
+            orig[0] = DR.dereverb(orig[0], sr)
+        else:
+            for ch in range(orig.shape[0]):
+                orig[ch] = DR.dereverb(orig[ch], sr)
+        # Atualiza o mono também (o resto do pipeline usa `mono`).
+        mono = A.to_mono(orig)
 
     progress(f"Isolando voz ({enhance_backend})…")
     models.ensure(enhance_backend)

@@ -20,6 +20,7 @@ class Preset:
     background: float
     enhance_backend: str  # "deepfilter" | "resemble"
     do_separate: bool = True
+    do_dereverb: bool = True  # WPE: tira reverb de sala. Default ON pra todos.
 
 
 # Ordem = ordem que aparecem no painel e na CLI.
@@ -74,6 +75,7 @@ def list_for_panel() -> list[dict]:
             "music": p.music,
             "background": p.background,
             "enhance_backend": p.enhance_backend,
+            "do_dereverb": p.do_dereverb,
         }
         for p in REGISTRY.values()
     ]
