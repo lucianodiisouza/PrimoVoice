@@ -13,5 +13,9 @@ demucs>=4.0.1
 torch==2.2.2
 torchaudio==2.2.2
 
+# De-reverb (WPE). Python puro, sem GPU. Aplicado ANTES do enhance pra voz
+# limpa chegar ao isolador sem cor de sala.
+nara_wpe>=0.0.3
+
 # Backend opcional de qualidade máxima (instale com: pip install -e .[resemble])
 # resemble-enhance
