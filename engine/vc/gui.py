@@ -577,7 +577,7 @@ class PrimoVoiceApp:
     def _open_settings(self) -> None:
         win = ctk.CTkToplevel(self.root)
         win.title("Configurações")
-        win.geometry("420x320")
+        win.geometry("440x360")
         win.configure(fg_color=BG)
         win.transient(self.root)
         win.grab_set()
@@ -586,34 +586,183 @@ class PrimoVoiceApp:
             font=ctk.CTkFont(size=16, weight="bold"),
             text_color=TEXT, anchor="w",
         ).pack(anchor="w", padx=20, pady=(20, 12))
-        # Backend
+        # Backend - só mostra "resemble" se a dep estiver instalada.
         body = ctk.CTkFrame(win, fg_color="transparent")
         body.pack(fill="x", padx=20)
         body.grid_columnconfigure(1, weight=1)
         ctk.CTkLabel(body, text="Modelo de voz", anchor="w",
                      text_color=TEXT).grid(row=0, column=0, sticky="w", pady=4)
-        ctk.CTkComboBox(
-            body, values=["deepfilter", "resemble"],
+        backends = ["deepfilter"]
+        resemble_installed = self._is_resemble_available()
+        if resemble_installed:
+            backends.append("resemble")
+        backend_combo = ctk.CTkComboBox(
+            body, values=backends,
             variable=self.enhance_var,
             command=lambda _v: self._mark_custom(),
             fg_color=CARD, border_color=CARD_BORDER, button_color=CARD_BORDER,
             text_color=TEXT,
-        ).grid(row=0, column=1, sticky="ew", pady=4)
+        )
+        backend_combo.grid(row=0, column=1, sticky="ew", pady=4)
+        # Se resemble não tá instalado, mostra link "Instalar" pra ativar.
+        if not resemble_installed:
+            install_row = ctk.CTkFrame(body, fg_color="transparent")
+            install_row.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 4))
+            ctk.CTkLabel(
+                install_row,
+                text="Resemble-Enhance (max qualidade) não instalado (~300 MB).",
+                font=ctk.CTkFont(size=11), text_color=TEXT_SOFT, anchor="w",
+            ).pack(side="left", fill="x", expand=True)
+            ctk.CTkButton(
+                install_row, text="Instalar", width=80, height=24,
+                fg_color=CARD, hover_color=CARD_BORDER, text_color=TEXT,
+                font=ctk.CTkFont(size=11),
+                command=lambda: self._install_resemble(parent=win),
+            ).pack(side="right")
         ctk.CTkSwitch(
             body, text="Pular separação de música (Demucs)",
             variable=self.no_separate_var, command=self._mark_custom,
             progress_color=ACCENT,
-        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(12, 0))
+        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(12, 0))
         ctk.CTkSwitch(
             body, text="Pular normalização do final",
             variable=self.no_normalize_var,
             progress_color=ACCENT,
-        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(8, 0))
         ctk.CTkButton(
             win, text="Fechar", command=win.destroy,
             fg_color=ACCENT, hover_color=ACCENT_HOVER,
             height=36, corner_radius=18,
         ).pack(pady=(16, 20))
+
+    @staticmethod
+    def _is_resemble_available() -> bool:
+        try:
+            import resemble_enhance  # noqa: F401
+            return True
+        except ImportError:
+            return False
+
+    def _install_resemble(self, parent: ctk.CTkToplevel | None = None) -> None:
+        """Roda `pip install -e .[resemble]` no venv em subprocess.
+        Mostra progresso no dialog. Recarrega settings após sucesso.
+        """
+        venv_pip = Path(__file__).parent.parent / ".venv" / "bin" / "pip"
+        engine_dir = Path(__file__).parent.parent
+        if not venv_pip.exists():
+            self._show_info_dialog(
+                "venv não encontrado",
+                f"Não achei {venv_pip}. Roda o install.sh primeiro.",
+                icon="⚠",
+            )
+            return
+        # Dialog de progresso.
+        prog = ctk.CTkToplevel(self.root)
+        prog.title("Instalando Resemble-Enhance")
+        prog.geometry("440x200")
+        prog.configure(fg_color=BG)
+        prog.transient(self.root)
+        prog.grab_set()
+        ctk.CTkLabel(
+            prog, text="Instalando resemble-enhance (~300 MB)…",
+            font=ctk.CTkFont(size=14, weight="bold"), text_color=TEXT, anchor="w",
+        ).pack(anchor="w", padx=20, pady=(20, 8))
+        status_var = tk.StringVar(value="pip install -e .[resemble]")
+        ctk.CTkLabel(
+            prog, textvariable=status_var,
+            font=ctk.CTkFont(family="Menlo", size=11),
+            text_color=TEXT_SOFT, anchor="w", wraplength=400,
+        ).pack(anchor="w", padx=20, fill="x")
+        progress = ctk.CTkProgressBar(prog, height=4, progress_color=ACCENT)
+        progress.set(0)
+        progress.pack(fill="x", padx=20, pady=(12, 0))
+        # Roda o pip em thread; UI atualiza via events queue.
+        result: dict = {"ok": False, "msg": ""}
+
+        def run():
+            try:
+                proc = subprocess.run(
+                    [str(venv_pip), "install", "-e", str(engine_dir), "[resemble]"],
+                    capture_output=True, text=True, cwd=str(engine_dir),
+                )
+                if proc.returncode == 0:
+                    result["ok"] = True
+                    result["msg"] = "ok"
+                else:
+                    result["msg"] = proc.stderr[-300:] or proc.stdout[-300:]
+                self.events.put(("resemble_install_done", result))
+            except Exception as e:
+                result["msg"] = str(e)
+                self.events.put(("resemble_install_done", result))
+
+        threading.Thread(target=run, daemon=True).start()
+
+        def poll():
+            # Atualiza o status_var com a última linha do pip (best-effort,
+            # aqui só animamos a barra).
+            cur = progress.get()
+            if cur < 0.9:
+                progress.set(cur + 0.05)
+            if result.get("ok") or result.get("msg") and "Resemble" not in result.get("msg", ""):
+                # Terminado: mostra resultado.
+                progress.set(1.0 if result.get("ok") else 0.0)
+                if result.get("ok"):
+                    status_var.set("✓ Instalado! Reabrindo configurações…")
+                    prog.after(800, lambda: (prog.destroy(), self._refresh_settings_after_install(parent)))
+                else:
+                    status_var.set(f"Falhou: {result.get('msg','')[:200]}")
+                    ctk.CTkButton(
+                        prog, text="Fechar", command=prog.destroy,
+                        fg_color=ACCENT, hover_color=ACCENT_HOVER,
+                        height=32, corner_radius=16,
+                    ).pack(pady=(12, 16))
+                return
+            prog.after(150, poll)
+
+        prog.after(100, poll)
+
+    def _refresh_settings_after_install(self, parent: ctk.CTkToplevel | None) -> None:
+        if parent and parent.winfo_exists():
+            parent.destroy()
+        self._open_settings()
+
+    def _show_info_dialog(
+        self, title: str, message: str, *, icon: str = "⚠",
+        action_label: str | None = None, action=None,
+    ) -> None:
+        """Dialog customizado no estilo da UI (substitui tk.messagebox feio)."""
+        win = ctk.CTkToplevel(self.root)
+        win.title(title)
+        win.geometry("440x200")
+        win.configure(fg_color=BG)
+        win.transient(self.root)
+        win.grab_set()
+        header = ctk.CTkFrame(win, fg_color="transparent")
+        header.pack(fill="x", padx=20, pady=(20, 8))
+        ctk.CTkLabel(
+            header, text=icon, font=ctk.CTkFont(size=24), text_color=TEXT, anchor="w",
+        ).pack(side="left", padx=(0, 12))
+        ctk.CTkLabel(
+            header, text=title, font=ctk.CTkFont(size=16, weight="bold"),
+            text_color=TEXT, anchor="w",
+        ).pack(side="left")
+        ctk.CTkLabel(
+            win, text=message, font=ctk.CTkFont(size=13),
+            text_color=TEXT_SOFT, anchor="nw", justify="left", wraplength=400,
+        ).pack(fill="x", padx=20)
+        btn_row = ctk.CTkFrame(win, fg_color="transparent")
+        btn_row.pack(fill="x", padx=20, pady=(12, 16))
+        if action_label and action:
+            ctk.CTkButton(
+                btn_row, text=action_label, command=lambda: (action(), win.destroy()),
+                fg_color=ACCENT, hover_color=ACCENT_HOVER,
+                height=36, corner_radius=18,
+            ).pack(side="right", padx=(8, 0))
+        ctk.CTkButton(
+            btn_row, text="OK", command=win.destroy,
+            fg_color=CARD, hover_color=CARD_BORDER, text_color=TEXT,
+            height=36, corner_radius=18,
+        ).pack(side="right")
 
     # ---- Preset wiring --------------------------------------------------
 
@@ -897,7 +1046,28 @@ class PrimoVoiceApp:
                         f"✗ {type(err).__name__}: {err}\n", color=ERR_COLOR)
                     self.process_btn.configure(
                         state="normal", text="▶  Processar")
-                    messagebox.showerror("Falhou", f"{type(err).__name__}: {err}")
+                    # Caso especial: usuário selecionou 'resemble' sem ter
+                    # instalado a dep. Mostra dialog estilizado com botão
+                    # "Instalar" em vez do feio messagebox.showerror.
+                    if (isinstance(err, ModuleNotFoundError)
+                            and "resemble_enhance" in str(err)):
+                        self._show_info_dialog(
+                            "Resemble-Enhance não instalado",
+                            "Você escolheu o modelo Resemble-Enhance mas a "
+                            "dependência não está no venv. É um download de "
+                            "~300 MB. Clique em 'Instalar' pra adicionar agora.",
+                            action_label="Instalar agora (~300 MB)",
+                            action=lambda: self._install_resemble(),
+                        )
+                    else:
+                        messagebox.showerror(
+                            "Falhou", f"{type(err).__name__}: {err}")
+                elif kind == "resemble_install_done":
+                    res = payload
+                    if res.get("ok"):
+                        # Reabrir settings (que vai listar resemble agora).
+                        # O dialog de progresso já cuida de fechar e reabrir.
+                        pass
         except queue.Empty:
             pass
         finally:
