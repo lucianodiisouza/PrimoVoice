@@ -29,6 +29,7 @@ from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 import numpy as np
+import pygame
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
@@ -163,6 +164,23 @@ class PrimoVoiceApp:
         self._samples_original: np.ndarray = np.zeros(800)
         self._samples_enhanced: np.ndarray = np.zeros(800)
 
+        # Player state.
+        self._playing = False
+        self._paused = False
+        self._current_track: str = "original"  # qual arquivo o mixer carregou.
+        self._loaded_track: str = ""           # qual arquivo está carregado.
+        self._duration: float = 0.0
+        self._position: float = 0.0            # segundos, atualizada por poll.
+        self._play_start_pos: float = 0.0      # posição no momento do último play().
+        self._seek_dragging: bool = False      # True enquanto user arrasta slider.
+        self._audio_available: bool = False
+        try:
+            pygame.mixer.init()
+            self._audio_available = True
+        except pygame.error as e:
+            # Sem dispositivo de áudio (CI headless, etc) - player fica desabilitado.
+            print(f"[PrimoVoice] mixer.init falhou: {e}", flush=True)
+
         # Settings (criadas aqui pra estar prontas antes do _select_preset).
         # O dialog de Settings lê/escreve nestas vars.
         self.enhance_var = tk.StringVar(value="deepfilter")
@@ -172,6 +190,9 @@ class PrimoVoiceApp:
         self._build_ui()
         self._select_preset(self._payload[0]["id"])
         self._refresh_waveform()
+        # Polling de posição do player (separado do drain_events pra rodar
+        # mesmo quando a worker thread não emite nada).
+        self.root.after(80, self._poll_player)
 
         self.root.after(80, self._drain_events)
 
@@ -229,7 +250,7 @@ class PrimoVoiceApp:
         self.preset_seg.grid(row=2, column=0, columnspan=3, sticky="ew")
         row += 1
 
-        # ---- Player card (waveform + file info + A/B) -------------------
+        # ---- Player card (waveform + transport + A/B) -------------------
         player = ctk.CTkFrame(
             main, fg_color=CARD, corner_radius=16,
             border_width=1, border_color=CARD_BORDER,
@@ -238,51 +259,102 @@ class PrimoVoiceApp:
         player.grid_columnconfigure(0, weight=1)
         row += 1
 
-        # Waveform (matplotlib embed).
+        # Container do waveform: matplotlib + canvas overlay pra linha de playback.
+        wf_container = ctk.CTkFrame(player, fg_color=CARD, corner_radius=0)
+        wf_container.grid(row=0, column=0, sticky="ew", padx=20, pady=(20, 4))
+        wf_container.grid_columnconfigure(0, weight=1)
         self.fig = Figure(figsize=(6, 1.6), dpi=100)
         self.fig.patch.set_facecolor(CARD)
-        self.waveform = FigureCanvasTkAgg(self.fig, master=player)
+        self.waveform = FigureCanvasTkAgg(self.fig, master=wf_container)
         self.waveform.get_tk_widget().configure(
             bg=CARD, highlightthickness=0, height=120)
-        self.waveform.get_tk_widget().grid(
-            row=0, column=0, sticky="ew", padx=20, pady=(20, 8))
+        self.waveform.get_tk_widget().grid(row=0, column=0, sticky="ew")
+        # Canvas overlay: mesma cor do card (fundo "esconde" o matplotlib);
+        # desenhamos só a linha vertical de playback. Mais leve que redraw
+        # do matplotlib a 12 fps.
+        self._play_overlay = tk.Canvas(
+            wf_container, bg=CARD, highlightthickness=0, bd=0, height=120,
+        )
+        self._play_overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
+        self._play_line = None
+        # Bind pra redimensionar a linha quando a janela muda.
+        self._play_overlay.bind("<Configure>", lambda _e: self._draw_play_line())
 
-        # File info row: nome do arquivo + botões de "abrir" + A/B.
-        info = ctk.CTkFrame(player, fg_color="transparent")
-        info.grid(row=1, column=0, sticky="ew", padx=20, pady=(0, 20))
-        info.grid_columnconfigure(1, weight=1)
+        # File picker.
+        file_row = ctk.CTkFrame(player, fg_color="transparent")
+        file_row.grid(row=1, column=0, sticky="ew", padx=20, pady=(4, 4))
+        file_row.grid_columnconfigure(1, weight=1)
         self.input_var = tk.StringVar()
         self.output_var = tk.StringVar()
         ctk.CTkButton(
-            info, text="📁  Escolher áudio", height=36, corner_radius=18,
+            file_row, text="📁  Escolher áudio", height=36, corner_radius=18,
             fg_color=BG, hover_color=CARD_BORDER, text_color=TEXT,
             command=self._pick_input,
         ).grid(row=0, column=0, padx=(0, 8))
         ctk.CTkEntry(
-            info, textvariable=self.input_var,
+            file_row, textvariable=self.input_var,
             placeholder_text="Nenhum arquivo selecionado…",
             height=36, corner_radius=18, border_width=0,
             fg_color=BG, text_color=TEXT, placeholder_text_color=TEXT_FAINT,
-        ).grid(row=0, column=1, sticky="ew", padx=(0, 8))
+        ).grid(row=0, column=1, sticky="ew")
 
-        # A/B (depois de processar fica clicável; antes fica desabilitado).
-        self.ab_switch = ctk.CTkSwitch(
-            info, text="",
-            command=self._on_ab_change,
-            progress_color=ACCENT,
-            switch_width=44, switch_height=22,
+        # Transport: play/pause + position slider + time label.
+        transport = ctk.CTkFrame(player, fg_color="transparent")
+        transport.grid(row=2, column=0, sticky="ew", padx=20, pady=(4, 4))
+        transport.grid_columnconfigure(1, weight=1)
+        self.play_btn = ctk.CTkButton(
+            transport, text="▶", width=48, height=48, corner_radius=24,
+            fg_color=ACCENT, hover_color=ACCENT_HOVER,
+            text_color="#ffffff",
+            font=ctk.CTkFont(size=18, weight="bold"),
+            command=self._toggle_play,
         )
-        # Custom label do A/B (Switch com text="" + CtkLabel).
-        self.ab_label = ctk.CTkLabel(
-            info, text="", font=ctk.CTkFont(size=12, weight="bold"),
-            text_color=TEXT_SOFT,
+        self.play_btn.grid(row=0, column=0, padx=(0, 12))
+        # Sinaliza que o botão está desabilitado (sem áudio carregado).
+        if not self._audio_available:
+            self.play_btn.configure(state="disabled")
+        self.position_var = tk.DoubleVar(value=0.0)
+        # CTkSlider não tem signal de "começou a arrastar" / "terminou",
+        # então usamos bindings do tk por baixo.
+        self.position_slider = ctk.CTkSlider(
+            transport, from_=0, to=100, variable=self.position_var,
+            command=self._on_seek,
+            progress_color=ACCENT, button_color=ACCENT,
+            button_hover_color=ACCENT_HOVER, fg_color=CARD_BORDER, height=8,
         )
-        # Inicialmente desabilitado.
-        self.ab_switch.configure(state="disabled")
-        self.ab_label.configure(text="Processe um áudio pra A/B")
-        # Posiciona switch à direita.
-        self.ab_label.grid(row=0, column=2, padx=(8, 8))
-        self.ab_switch.grid(row=0, column=3)
+        self.position_slider.grid(row=0, column=1, sticky="ew", padx=(0, 12))
+        # Detect drag begin/end via bindings do slider interno (tk Scale).
+        try:
+            inner = self.position_slider._slider
+            inner.bind("<ButtonPress-1>",
+                       lambda _e: self._on_seek_drag(True), add="+")
+            inner.bind("<ButtonRelease-1>",
+                       lambda _e: self._on_seek_drag(False), add="+")
+        except Exception:
+            pass
+        self.time_label = ctk.CTkLabel(
+            transport, text="0:00 / 0:00",
+            font=ctk.CTkFont(family="Menlo", size=12),
+            text_color=TEXT_SOFT, width=80, anchor="e",
+        )
+        self.time_label.grid(row=0, column=2)
+
+        # A/B segmented (estilo Adobe - mais visível que o switch anterior).
+        ab_row = ctk.CTkFrame(player, fg_color="transparent")
+        ab_row.grid(row=3, column=0, sticky="ew", padx=20, pady=(8, 20))
+        ab_row.grid_columnconfigure(0, weight=1)
+        self.ab_var = tk.StringVar(value="Original")
+        self.ab_seg = ctk.CTkSegmentedButton(
+            ab_row, values=["Original", "Enhanced"],
+            variable=self.ab_var, command=self._on_ab_change,
+            fg_color=BG, selected_color=ACCENT,
+            selected_hover_color=ACCENT_HOVER,
+            unselected_color=BG, text_color=TEXT,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            height=40,
+        )
+        self.ab_seg.grid(row=0, column=0, sticky="ew")
+        self.ab_seg.configure(state="disabled")  # habilita após processar
 
         # ---- Sliders (3 cards: Speech, Music, Background) ---------------
         self.speech_var = tk.DoubleVar(value=100.0)
@@ -507,18 +579,16 @@ class PrimoVoiceApp:
             samples = self._samples_original
         _draw_waveform(self.waveform, samples, color)
 
-    def _on_ab_change(self) -> None:
-        # CTkSwitch é 0/1; 1 = enhanced.
-        self._ab = "enhanced" if self.ab_switch.get() else "original"
+    def _on_ab_change(self, value: str | None = None) -> None:
+        # SegmentedButton passa o valor selecionado. Mapeia pra "original"/"enhanced".
+        new_ab = "enhanced" if self.ab_var.get() == "Enhanced" else "original"
+        was_playing = self._playing and not self._paused
+        self._ab = new_ab
         self._refresh_waveform()
-        # Atualiza label do A/B.
-        self._update_ab_label()
-
-    def _update_ab_label(self) -> None:
-        if self._ab == "enhanced":
-            self.ab_label.configure(text="Enhanced", text_color=SPEECH_COLOR)
-        else:
-            self.ab_label.configure(text="Original", text_color=TEXT)
+        # Se estava tocando, troca o track no mixer mantendo a posição.
+        if was_playing and self._audio_available:
+            self._load_mixer_for_current_ab(start_at=self._position)
+            pygame.mixer.music.play(start=self._position)
 
     def _load_samples(self, path: str) -> np.ndarray:
         p = Path(path)
@@ -540,15 +610,28 @@ class PrimoVoiceApp:
         if not path:
             return
         self.input_var.set(path)
+        # Para o player se tava tocando.
+        self._stop_playback()
         # Recarrega waveform do original.
         self._samples_original = self._load_samples(path)
+        # Recarrega duration.
+        self._duration = self._load_duration(path)
+        self._position = 0.0
+        self._update_time_label()
+        # Carrega o áudio no mixer.
+        if self._audio_available:
+            try:
+                pygame.mixer.music.load(path)
+                self._loaded_track = path
+            except pygame.error as e:
+                print(f"[PrimoVoice] mixer.load falhou: {e}", flush=True)
+                self._loaded_track = ""
         # Reset do A/B.
         self._enhanced_path = None
         self._samples_enhanced = np.zeros(800)
         self._ab = "original"
-        self.ab_switch.configure(state="disabled")
-        self.ab_label.configure(text="Processe um áudio pra A/B")
-        self.ab_switch.deselect()
+        self.ab_var.set("Original")
+        self.ab_seg.configure(state="disabled")
         self._refresh_waveform()
 
     # ---- Process --------------------------------------------------------
@@ -616,13 +699,12 @@ class PrimoVoiceApp:
                     self._append_log(f"✓ salvo em {out}\n", color=OK_COLOR)
                     self.process_btn.configure(
                         state="normal", text="▶  Processar")
-                    # A/B: carrega waveform do enhanced e habilita switch.
+                    # A/B: carrega waveform do enhanced e habilita segmented.
                     self._enhanced_path = out
                     self._samples_enhanced = self._load_samples(out)
-                    self._ab = "original"  # começa mostrando original
-                    self.ab_switch.configure(state="normal")
-                    self.ab_switch.deselect()
-                    self._update_ab_label()
+                    self._ab = "original"
+                    self.ab_var.set("Original")
+                    self.ab_seg.configure(state="normal")
                     self._refresh_waveform()
                     # Toca o "Done" via statusbar (sem messagebox - clean).
                 elif kind == "error":
@@ -668,6 +750,187 @@ class PrimoVoiceApp:
         else:
             self.log_toggle.configure(text="▸ Log")
             self.log_frame.grid_forget()
+
+    # ---- Audio playback -------------------------------------------------
+
+    @staticmethod
+    def _format_time(seconds: float) -> str:
+        if seconds < 0 or seconds != seconds:  # NaN check
+            return "0:00"
+        m, s = divmod(int(seconds), 60)
+        return f"{m}:{s:02d}"
+
+    def _load_duration(self, path: str) -> float:
+        """Pega a duração do áudio em segundos. Usa ffprobe (já tem ffmpeg)."""
+        try:
+            raw = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                 "-of", "default=noprint_wrappers=1:nokey=1", path],
+                capture_output=True, text=True, check=True,
+            ).stdout.strip()
+            return float(raw)
+        except Exception:
+            return 0.0
+
+    def _update_time_label(self) -> None:
+        self.time_label.configure(
+            text=f"{self._format_time(self._position)} / "
+                 f"{self._format_time(self._duration)}")
+
+    def _current_track_path(self) -> str | None:
+        """Caminho do arquivo correspondente ao A/B atual. None se não tem."""
+        if self._ab == "enhanced":
+            return self._enhanced_path
+        return self.input_var.get().strip() or None
+
+    def _load_mixer_for_current_ab(self, start_at: float = 0.0) -> bool:
+        """Carrega o arquivo do A/B atual no pygame mixer. Retorna True se ok."""
+        if not self._audio_available:
+            return False
+        path = self._current_track_path()
+        if not path or not Path(path).exists():
+            return False
+        if self._loaded_track != path:
+            try:
+                pygame.mixer.music.load(path)
+                self._loaded_track = path
+            except pygame.error as e:
+                print(f"[PrimoVoice] mixer.load falhou: {e}", flush=True)
+                return False
+        return True
+
+    def _toggle_play(self) -> None:
+        if not self._audio_available:
+            return
+        path = self._current_track_path()
+        if not path or not Path(path).exists():
+            messagebox.showinfo("Sem áudio", "Escolhe um arquivo de entrada.")
+            return
+        # Caso 1: tava tocando -> pausa.
+        if self._playing and not self._paused:
+            pygame.mixer.music.pause()
+            self._paused = True
+            self.play_btn.configure(text="▶")
+            return
+        # Caso 2: tava pausado -> resume.
+        if self._playing and self._paused:
+            pygame.mixer.music.unpause()
+            self._paused = False
+            self.play_btn.configure(text="⏸")
+            return
+        # Caso 3: parado -> começa do zero (ou do A/B atual se mudou).
+        if not self._load_mixer_for_current_ab():
+            return
+        # Se trocou de track mid-session, recarrega e começa do 0.
+        if self._current_track != self._ab:
+            self._current_track = self._ab
+            self._position = 0.0
+        self._play_start_pos = self._position
+        pygame.mixer.music.play(start=self._position)
+        self._playing = True
+        self._paused = False
+        self.play_btn.configure(text="⏸")
+
+    def _stop_playback(self) -> None:
+        if not self._audio_available:
+            return
+        try:
+            pygame.mixer.music.stop()
+        except pygame.error:
+            pass
+        self._playing = False
+        self._paused = False
+        self._position = 0.0
+        self._current_track = ""
+        self.play_btn.configure(text="▶")
+        # Volta slider pra 0.
+        self.position_var.set(0.0)
+        self._update_time_label()
+        self._draw_play_line()
+
+    def _on_seek(self, value: float) -> None:
+        """Callback do CTkSlider. value está em 0..100 (escala do slider)."""
+        if not self._audio_available or self._duration <= 0:
+            return
+        target = float(value) / 100.0 * self._duration
+        self._position = target
+        self._update_time_label()
+        self._draw_play_line()
+        # Aplica seek só quando o user SOLTA o slider, não a cada movimento
+        # (seria custoso reiniciar o mixer a cada pixel). Detectado pelo
+        # _seek_dragging (False no release).
+        if not self._seek_dragging and self._playing and not self._paused:
+            try:
+                pygame.mixer.music.play(start=target)
+            except pygame.error:
+                pass
+
+    def _on_seek_drag(self, dragging: bool) -> None:
+        self._seek_dragging = dragging
+        if not dragging and self._audio_available and self._duration > 0:
+            # Release: aplica o seek de verdade.
+            value = float(self.position_var.get())
+            target = value / 100.0 * self._duration
+            if self._playing:
+                if self._paused:
+                    # Se tava pausado, recarrega e pausa na posição nova.
+                    if self._load_mixer_for_current_ab():
+                        try:
+                            pygame.mixer.music.play(start=target)
+                            pygame.mixer.music.pause()
+                            self._paused = True
+                            self.play_btn.configure(text="▶")
+                        except pygame.error:
+                            pass
+                else:
+                    try:
+                        pygame.mixer.music.play(start=target)
+                    except pygame.error:
+                        pass
+
+    def _poll_player(self) -> None:
+        """Chamado a cada 80ms. Atualiza posição, label, linha de playback."""
+        if self._audio_available and self._playing and not self._paused:
+            # pygame.mixer.music.get_pos() retorna ms desde o play() atual
+            # (não desde o início do track). Soma com a posição em que começou
+            # pra ter a posição absoluta.
+            pos_ms = pygame.mixer.music.get_pos()
+            if pos_ms < 0:
+                # -1 = não tem música tocando (parou / terminou).
+                if self._duration > 0 and self._position >= self._duration - 0.05:
+                    # Terminou naturalmente: reseta.
+                    self._stop_playback()
+            else:
+                # get_pos() reseta a cada play(); pra ter posição absoluta,
+                # guardamos a posição de início do play() atual.
+                pos_s = self._play_start_pos + pos_ms / 1000.0
+                # Trava no fim se o mixer reportar mais que a duração.
+                if self._duration > 0:
+                    pos_s = min(pos_s, self._duration)
+                self._position = pos_s
+                # Atualiza slider sem disparar callback (que faria seek).
+                self._seek_dragging = True
+                self.position_var.set(self._position / max(self._duration, 0.001) * 100.0)
+                self._seek_dragging = False
+                self._update_time_label()
+                self._draw_play_line()
+        self.root.after(80, self._poll_player)
+
+    def _draw_play_line(self) -> None:
+        """Desenha a linha vertical de playback sobre o waveform."""
+        if not self._play_overlay.winfo_exists():
+            return
+        self._play_overlay.delete("playline")
+        if self._duration <= 0:
+            return
+        h = self._play_overlay.winfo_height()
+        w = self._play_overlay.winfo_width()
+        if w < 2:
+            return
+        ratio = min(self._position / self._duration, 1.0)
+        x = max(1, min(w - 1, int(ratio * w)))
+        self._play_overlay.create_line(
+            x, 0, x, h, fill=ACCENT, width=2, tags="playline")
 
 
 def main() -> int:

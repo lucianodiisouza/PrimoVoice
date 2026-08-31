@@ -23,6 +23,8 @@ dependencies = [
     "customtkinter>=5.2",
     # Waveform no GUI.
     "matplotlib>=3.7",
+    # Audio playback (transport com play/pause/seek).
+    "pygame>=2.5",
 ]
 
 [project.optional-dependencies]
